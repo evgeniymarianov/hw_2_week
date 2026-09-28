@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Annotated
+from app.db import AsyncSessionLocal, engine
 
 from app.db import engine
 from app.models import Booking, BookingStatus, Event, EventSeat, Seat, SeatStatus
@@ -91,6 +92,14 @@ async def get_event_dashboard(event_id: int, organizer_id: CurrentUserId) -> Eve
     """Возвращает аналитические данные для дашборда по мероприятию."""
     # TODO: проверить, что мероприятие принадлежит organizer_id.
     # TODO: конкурентно загрузить аналитику продаж и занятость мест отдельными запросами к БД.
+    async def _sales() -> SalesDashboard:
+        async with AsyncSessionLocal() as session:
+            return await _get_sales_analytics(session, event_id)
+
+    async def _occupancy() -> OccupancyDashboard:
+        async with AsyncSessionLocal() as session:
+            return await _get_occupancy_analytics(session, event_id)
+    
     async with AsyncSession(engine) as db:
         # Проверяем, что мероприятие принадлежит организатору
         event_query = select(Event).where(Event.id == event_id, Event.organizer_id == organizer_id)
@@ -105,8 +114,8 @@ async def get_event_dashboard(event_id: int, organizer_id: CurrentUserId) -> Eve
 
         # Конкурентно загружаем аналитику продаж и заполняемости
         async with asyncio.TaskGroup() as tg:
-            sales_task = tg.create_task(_get_sales_analytics(db, event_id))
-            occupancy_task = tg.create_task(_get_occupancy_analytics(db, event_id))
+            sales_task = tg.create_task(_sales())
+            occupancy_task = tg.create_task(_occupancy())
 
         sales = sales_task.result()
         occupancy = occupancy_task.result()
@@ -405,7 +414,7 @@ async def prepare_checkout(
 ) -> CheckoutResponse:
     """Временно бронирует места за клиентом, возвращает итоговую стоимость
     и возможность страховки."""
-    async with AsyncSession(engine) as db:
+    async with AsyncSessionLocal() as db:
         async with db.begin():
             # 1. Бронируем места с блокировкой строк
             event, seats_data, booking = await _reserve_seats(
@@ -466,7 +475,7 @@ async def prepare_checkout(
     protection_quote = protection_task.result()
 
     # 3. Обновляем бронь с полученными данными
-    async with AsyncSession(engine) as db:
+    async with AsyncSessionLocal() as db:
         async with db.begin():
             await _update_booking_with_quotes(
                 db=db,
